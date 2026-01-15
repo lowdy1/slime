@@ -6,7 +6,10 @@ from argparse import Namespace
 import ray
 import torch
 import torch.distributed as dist
-from ring_flash_attn import update_ring_flash_attn_params
+try:
+    from ring_flash_attn import update_ring_flash_attn_params
+except ImportError:
+    update_ring_flash_attn_params = None
 from tqdm import tqdm
 from transformers import AutoConfig
 
@@ -19,6 +22,7 @@ from slime.utils.processing_utils import load_processor, load_tokenizer
 from slime.utils.ray_utils import Box
 from slime.utils.timer import Timer, inverse_timer, timer
 from slime.utils.tracking_utils import init_tracking
+from slime.utils.device import get_torch_device, get_device_name
 
 from ...utils.profile_utils import TrainProfiler
 from ..training_utils.ci_utils import check_grad_norm
@@ -229,10 +233,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         # Rank 0: move with weights, others: allocate empty tensors on device
         if dist.get_rank() == 0:
-            model = model.to(device=torch.cuda.current_device(), non_blocking=True)
+            model = model.to(device=get_torch_device().current_device(), non_blocking=True)
         else:
             # to_empty creates tensors on device without initializing memory
-            model = model.to_empty(device=torch.cuda.current_device())
+            model = model.to_empty(device=get_torch_device().current_device())
 
         is_cpu_offload = cpu_offload is not None
         options = StateDictOptions(full_state_dict=True, cpu_offload=is_cpu_offload, broadcast_from_rank0=True)
@@ -246,7 +250,7 @@ class FSDPTrainRayActor(TrainRayActor):
         if is_cpu_offload:
             model.to("cpu", non_blocking=True)
             for buf in model.buffers():
-                buf.data = buf.data.to(torch.cuda.current_device())
+                buf.data = buf.data.to(get_torch_device().current_device())
 
         return model
 
@@ -270,8 +274,8 @@ class FSDPTrainRayActor(TrainRayActor):
         if not self.args.offload_train:
             return
 
-        self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
+        self.model.to(get_device_name())
+        move_torch_optimizer(self.optimizer, get_device_name())
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
@@ -309,7 +313,7 @@ class FSDPTrainRayActor(TrainRayActor):
         if model_tag == "ref" and self.ref_model is not None:
             if not self.fsdp_cpu_offload:
                 self.model.cpu()
-                torch.cuda.empty_cache()
+                get_torch_device().empty_cache()
                 dist.barrier(group=get_gloo_group())
 
             active_model = self.ref_model
@@ -376,11 +380,11 @@ class FSDPTrainRayActor(TrainRayActor):
         finally:
             # Restore actor model if it was offloaded
             if model_tag == "ref" and self.ref_model is not None:
-                torch.cuda.empty_cache()
+                get_torch_device().empty_cache()
                 dist.barrier(group=get_gloo_group())
 
                 if not self.fsdp_cpu_offload:
-                    self.model.cuda()
+                    self.model.to(get_device_name())
                     dist.barrier(group=get_gloo_group())
 
     def train(self, rollout_id: int, rollout_data_ref: Box) -> None:
@@ -619,7 +623,7 @@ class FSDPTrainRayActor(TrainRayActor):
             if "cu_seqlens" in batch:
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:
-                    cu_seqlens = cu_seqlens.cuda()
+                    cu_seqlens = cu_seqlens.to(get_device_name())
                 update_ring_flash_attn_params(cu_seqlens, self.cp_group)
 
             input_ids = torch.chunk(input_ids, self.parallel_state.cp_size, dim=1)[self.parallel_state.cp_rank]
@@ -650,7 +654,7 @@ def move_torch_optimizer(optimizer, device):
                 if isinstance(value, torch.Tensor):
                     state[key] = value.to(device, non_blocking=True)
 
-    torch.cuda.synchronize()
+    get_torch_device().synchronize()
 
 
 def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):

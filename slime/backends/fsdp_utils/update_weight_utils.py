@@ -18,6 +18,7 @@ except ImportError:
 from sglang.srt.utils import MultiprocessingSerializer
 
 from slime.utils.distributed_utils import init_process_group
+from slime.utils.device import get_torch_device, get_nccl_backend, get_device_name
 
 
 try:
@@ -55,7 +56,7 @@ class UpdateWeight(abc.ABC):
                 bucket = []
                 bucket_size = 0
 
-            param = param.cuda()
+            param = param.to(get_device_name())
             if isinstance(param, DTensor):
                 # async version of param.full_tensor
                 param = param.redistribute(
@@ -206,12 +207,12 @@ class UpdateWeightFromDistributed(UpdateWeight):
                     i * self.args.rollout_num_gpus_per_engine + 1,
                     world_size,
                     self._group_name,
-                    backend="nccl",
+                    backend=get_nccl_backend(),
                 )
                 for i, engine in enumerate(self.rollout_engines)
             ]
             self._model_update_groups = init_process_group(
-                backend="nccl",
+                backend=get_nccl_backend(),
                 init_method=f"tcp://{master_address}:{master_port}",
                 world_size=world_size,
                 rank=0,
@@ -242,7 +243,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
         handles = []
         # Broadcast parameters one by one with memory management
         for _name, param in named_tensors:
-            torch.cuda.empty_cache()
+            get_torch_device().empty_cache()
             # Ensure tensor is contiguous and on the right device
             param_data = param.data.contiguous()
 

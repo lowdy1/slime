@@ -16,6 +16,7 @@ from slime.backends.megatron_utils.initialize import init
 from slime.backends.megatron_utils.model_provider import get_model_provider_func
 from slime.utils.logging_utils import configure_logger
 from slime.utils.memory_utils import print_memory
+from slime.utils.device import get_nccl_backend
 
 
 def add_convertion_args(parser):
@@ -99,7 +100,7 @@ def main():
     os.environ.setdefault("MASTER_ADDR", "localhost")
     os.environ.setdefault("MASTER_PORT", "12355")
     dist.init_process_group(
-        backend="nccl",
+        backend=get_nccl_backend(),
         world_size=world_size,
         rank=global_rank,
         device_id=torch.device(f"cuda:{local_rank}"),

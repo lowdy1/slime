@@ -3,28 +3,29 @@ import logging
 
 import torch
 import torch.distributed as dist
+from slime.utils.device import get_torch_device
 
 logger = logging.getLogger(__name__)
 
 
 def clear_memory(clear_host_memory: bool = False):
-    torch.cuda.synchronize()
+    get_torch_device().synchronize()
     gc.collect()
-    torch.cuda.empty_cache()
+    get_torch_device().empty_cache()
     if clear_host_memory:
         torch._C._host_emptyCache()
 
 
 def available_memory():
-    device = torch.cuda.current_device()
-    free, total = torch.cuda.mem_get_info(device)
+    device = get_torch_device().current_device()
+    free, total = get_torch_device().mem_get_info(device)
     return {
         "gpu": str(device),
         "total_GB": _byte_to_gb(total),
         "free_GB": _byte_to_gb(free),
         "used_GB": _byte_to_gb(total - free),
-        "allocated_GB": _byte_to_gb(torch.cuda.memory_allocated(device)),
-        "reserved_GB": _byte_to_gb(torch.cuda.memory_reserved(device)),
+        "allocated_GB": _byte_to_gb(get_torch_device().memory_allocated(device)),
+        "reserved_GB": _byte_to_gb(get_torch_device().memory_reserved(device)),
     }
 
 

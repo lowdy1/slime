@@ -8,8 +8,14 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from slime.backends.training_utils.parallel import ParallelState
 
+def cuda_compile(**compile_kwargs):
+    def decorator(fn):
+        if torch.cuda.is_available():
+            return torch.compile(fn, **compile_kwargs)
+        return fn
+    return decorator
 
-@torch.compile(dynamic=True)
+@cuda_compile(dynamic=True)
 def compute_approx_kl(
     log_probs: torch.Tensor,
     log_probs_base: torch.Tensor,
@@ -122,7 +128,7 @@ def compute_gspo_kl(
     return ppo_kl
 
 
-@torch.compile(dynamic=True)
+@cuda_compile(dynamic=True)
 def compute_policy_loss(
     ppo_kl: torch.Tensor,
     advantages: torch.Tensor,
@@ -150,13 +156,36 @@ def compute_policy_loss(
 
 
 def compute_log_probs(logits: torch.Tensor, tokens: torch.Tensor, process_group: dist.ProcessGroup | None):
-    # TODO: when megatron is not installed, fall back to naive implementation
-    from megatron.core.fusions.fused_cross_entropy import fused_vocab_parallel_cross_entropy
+     # TODO: when megatron is not installed, fall back to naive implementation
+    try:
+        from megatron.core.fusions.fused_cross_entropy import (
+            fused_vocab_parallel_cross_entropy
+        )
 
-    # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
-    logits = logits.unsqueeze(1)
-    tokens = tokens.unsqueeze(1)
-    return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+        # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entrop
+        logits = logits.unsqueeze(1)
+        tokens = tokens.unsqueeze(1)
+
+        return -fused_vocab_parallel_cross_entropy(
+            logits, tokens, process_group
+        )
+
+    except (ImportError, ModuleNotFoundError):
+        # -------- Naive Fallback (no vocab parallelism) --------
+
+        # logits: [seq_len, vocab]
+        # tokens: [seq_len]
+
+        log_probs = F.log_softmax(logits, dim=-1)
+
+        # gather target token log-probs
+        token_log_probs = log_probs.gather(
+            dim=-1,
+            index=tokens.unsqueeze(-1),  # [seq_len, 1]
+        )
+
+        # match Megatron output shape: [seq_len, 1]
+        return token_log_probs
 
 
 # from https://github.com/volcengine/verl/blob/0bdf7f469854815177e73dcfe9e420836c952e6e/verl/utils/megatron/tensor_parallel.py#L99
@@ -165,7 +194,7 @@ class _VocabParallelEntropy(torch.autograd.Function):
     @staticmethod
     def forward(ctx, vocab_parallel_logits: torch.Tensor, process_group: dist.ProcessGroup) -> torch.Tensor:
 
-        @torch.compile(dynamic=True)
+        @cuda_compile(dynamic=True)
         def mul_reduce(a, b):
             return (a * b).sum(dim=-1, keepdim=True)
 

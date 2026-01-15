@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 
 from slime.utils.memory_utils import print_memory
+from slime.utils.device import get_nccl_backend
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
-            group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend="nccl")
+            group = old_new_group(ranks=reloadable_group.group_info["ranks"], backend=get_nccl_backend())
             reloadable_group.group = group
 
     def rank(self) -> int:

@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import ray
+from slime.utils.device import get_device_name
 import torch
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -42,7 +43,6 @@ class RolloutManager:
 
     def __init__(self, args, pg):
         configure_logger()
-
         self.args = args
         self.pg = pg
         _start_router(args)
@@ -74,7 +74,14 @@ class RolloutManager:
             self.all_rollout_engines = [None] * num_engines
         self.num_new_engines = init_rollout_engines(args, pg, self.all_rollout_engines)
         self.nodes_per_engine = max(1, args.rollout_num_gpus_per_engine // args.num_gpus_per_node)
-        self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
+
+        if get_device_name() == "cuda":
+            self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
+        else:
+            self.rollout_engine_lock = Lock.options(
+                num_cpus=1,
+                resources={"NPU": 0},
+            ).remote()
         self.rollout_id = -1
 
         self._metric_checker = MetricChecker.maybe_create(args)
@@ -473,7 +480,7 @@ def init_rollout_engines(args, pg, all_rollout_engines):
         num_cpus = num_gpus
 
         # Get the base GPU ID from placement group
-        base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine])
+        base_gpu_id = int(reordered_gpu_ids[i * num_gpu_per_engine][0])
 
         scheduling_strategy = PlacementGroupSchedulingStrategy(
             placement_group=pg,
@@ -499,14 +506,20 @@ def init_rollout_engines(args, pg, all_rollout_engines):
             else:
                 worker_type = "decode"
 
-        rollout_engine = RolloutRayActor.options(
-            num_cpus=num_cpus,
-            num_gpus=num_gpus,
-            scheduling_strategy=scheduling_strategy,
-            runtime_env={
-                "env_vars": env_vars,
-            },
-        ).remote(args, rank=i, worker_type=worker_type, base_gpu_id=base_gpu_id)
+        actor_options = {
+            "num_cpus": num_cpus,
+            "scheduling_strategy": scheduling_strategy,
+            "runtime_env": {"env_vars": env_vars},
+        }
+        if get_device_name() == "cuda":
+            actor_options["num_gpus"] = num_gpus           
+        else:
+            actor_options["resources"] = {"NPU": num_gpus}
+
+        # Launch the RolloutRayActor
+        rollout_engine = RolloutRayActor.options(**actor_options).remote(
+            args, rank=i, worker_type=worker_type, base_gpu_id=base_gpu_id
+        )
 
         rollout_engines.append((i, rollout_engine))
         all_rollout_engines[i] = rollout_engine

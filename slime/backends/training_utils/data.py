@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from slime.utils.data import get_minimum_num_micro_batch_size
 from slime.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from slime.utils.types import RolloutBatch
+from slime.utils.device import get_torch_device, get_device_name
 
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
@@ -29,16 +30,16 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
-        torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+        torch.tensor(t, dtype=torch.long, device=get_torch_device().current_device()) for t in rollout_data["tokens"]
     ]
     rollout_data["loss_masks"] = [
-        torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+        torch.tensor(t, dtype=torch.int, device=get_torch_device().current_device()) for t in rollout_data["loss_masks"]
     ]
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
             (
-                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                {key: tensor.to(device=get_torch_device().current_device()) for key, tensor in mm_dict.items()}
                 if mm_dict is not None
                 else None
             )
@@ -66,7 +67,7 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box, parallel_state: Par
                     args.qkv_format,
                     rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
                 ),
-                device=torch.cuda.current_device(),
+                device=get_torch_device().current_device(),
                 dtype=torch.float32,
             )
             for i, (log_prob, total_length, response_length) in enumerate(
@@ -150,7 +151,7 @@ def get_batch(
             cu_seqlens.append(cu_seqlens[-1] + pad)
 
         # thd requires the cu_seqlens to be of the origin length
-        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).cuda() * cp_size
+        cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int).to(get_device_name()) * cp_size
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
 
         tokens = tokens.unsqueeze(0)
@@ -346,7 +347,7 @@ def get_data_iterator(
                 get_minimum_num_micro_batch_size(samples[start:end], args.max_tokens_per_gpu * cp_size)
             )
 
-        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
+        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=get_torch_device().current_device())
         dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=dp_group)
 
         if vpp_size > 1:

@@ -15,6 +15,7 @@ from urllib3.exceptions import NewConnectionError
 
 from slime.ray.ray_actor import RayActor
 from slime.utils.http_utils import get_host_info
+from slime.utils.device import get_visible_devices_keyword
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def get_base_gpu_id(args, rank):
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    cvd = os.environ.get(get_visible_devices_keyword())
     if not cvd:
         return physical_gpu_id  # no remapping
     # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
@@ -148,6 +149,11 @@ class SGLangEngine(RayActor):
         self.node_rank = server_args_dict["node_rank"]
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
+        # server_args_dict["device"] = "npu"
+        # server_args_dict["attention_backend"] = "ascend"
+        # server_args_dict["skip_server_warmup"] = False
+        # server_args_dict["enable_memory_saver"] = False
+        # server_args_dict["disable_cuda_graph"] = True
 
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)

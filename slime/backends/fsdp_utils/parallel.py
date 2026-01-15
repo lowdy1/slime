@@ -2,10 +2,14 @@ import logging
 from argparse import Namespace
 
 import torch.distributed as dist
-from ring_flash_attn import substitute_hf_flash_attn
+try:
+    from ring_flash_attn import substitute_hf_flash_attn
+except ImportError:
+    substitute_hf_flash_attn = None
 from torch.distributed.device_mesh import init_device_mesh
 
 from slime.utils.distributed_utils import get_gloo_group
+from slime.utils.device import get_device_name
 
 from ..training_utils.parallel import ParallelState
 
@@ -21,7 +25,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     dp_rank = rank // cp_size
     cp_rank = rank % cp_size
 
-    mesh = init_device_mesh("cuda", mesh_shape=(world_size // cp_size, cp_size), mesh_dim_names=("dp", "cp"))
+    mesh = init_device_mesh(get_device_name(), mesh_shape=(world_size // cp_size, cp_size), mesh_dim_names=("dp", "cp"))
 
     logger.info(
         f"[Rank {rank}] Device mesh (2D): world_size={world_size}, "

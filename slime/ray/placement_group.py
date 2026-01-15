@@ -7,14 +7,25 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from .actor_group import RayTrainGroup
 from .rollout import RolloutManager
+from slime.utils.device import get_device_name
 
 logger = logging.getLogger(__name__)
 
 
-@ray.remote(num_gpus=1)
+@ray.remote
 class InfoActor:
     def get_ip_and_gpu_id(self):
-        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
+        ctx = ray.get_runtime_context()
+
+        if get_device_name() == "npu":
+            accel_ids = ctx.get_accelerator_ids().get("NPU", [])
+        else:
+            # Default: CUDA GPU
+            accel_ids = ray.get_gpu_ids()
+
+        accel_id = accel_ids[0] if accel_ids else None
+        return ray.util.get_node_ip_address(), accel_id
+
 
 
 def sort_key(x):
@@ -40,7 +51,8 @@ def sort_key(x):
 
 def _create_placement_group(num_gpus):
     """Create a placement group with the specified number of GPUs."""
-    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
+    accelerator_type = "NPU" if get_device_name() == "npu" else "GPU"
+    bundles = [{accelerator_type: 1, "CPU": 1} for _ in range(num_gpus)]
     pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
@@ -48,14 +60,22 @@ def _create_placement_group(num_gpus):
     # use info actor to get the GPU id
     info_actors = []
     for i in range(num_bundles):
-        info_actors.append(
-            InfoActor.options(
-                scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=i,
-                )
-            ).remote()
-        )
+        options_kwargs = {
+            "scheduling_strategy": PlacementGroupSchedulingStrategy(
+                placement_group=pg,
+                placement_group_bundle_index=i
+            )
+        }
+
+        # assign resource to match the accelerator type
+        if accelerator_type == "NPU":
+            options_kwargs["resources"] = {"NPU": 1}
+        else:
+            options_kwargs["num_gpus"] = 1
+
+        actor = InfoActor.options(**options_kwargs).remote()
+        info_actors.append(actor)
+
     gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
     for actor in info_actors:
         ray.kill(actor)
@@ -167,10 +187,15 @@ def create_training_models(args, pgs, rollout_manager):
 
 
 def create_rollout_manager(args, pg):
-    rollout_manager = RolloutManager.options(
-        num_cpus=1,
-        num_gpus=0,
-    ).remote(args, pg)
+    rollout_manager_options = {"num_cpus": 1}  # always reserve 1 CPU
+
+    if get_device_name() == "npu":
+        rollout_manager_options["resources"] = {"NPU": 0}
+    else:
+        rollout_manager_options["num_gpus"] = 0
+
+    rollout_manager = RolloutManager.options(**rollout_manager_options).remote(args, pg)
+
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None

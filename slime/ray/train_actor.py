@@ -13,16 +13,23 @@ from slime.ray.ray_actor import RayActor
 from slime.utils.distributed_utils import init_gloo_group
 from slime.utils.logging_utils import configure_logger
 from slime.utils.memory_utils import clear_memory, print_memory
+from slime.utils.device import get_torch_device, get_device_name, get_visible_devices_keyword
 
 logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", None)
-    if cvd is None:
-        return ray.get_gpu_ids()[0]
+    cvd = os.environ.get(get_visible_devices_keyword(), None)
+    if get_device_name() == "cuda":
+        ids = ray.get_gpu_ids()
     else:
-        return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
+        ids = ray.get_runtime_context().get_accelerator_ids().get("NPU", [])
+
+    if cvd is None:
+        return ids[0]
+    else:
+        return cvd.split(",").index(str(ids[0]))
+        
 
 
 class TrainRayActor(RayActor):
@@ -55,13 +62,13 @@ class TrainRayActor(RayActor):
         torch.serialization.add_safe_globals([slime.utils.eval_config.EvalDatasetConfig])
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(f"cuda:{local_rank}")
+        get_torch_device().set_device(f"{get_device_name()}:{local_rank}")
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
         backend = args.distributed_backend
         if getattr(args, "fsdp_cpu_offload", False) and getattr(args, "fsdp_cpu_backend", None):
             cpu_backend = args.fsdp_cpu_backend
-            backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
+            backend = f"cpu:{cpu_backend},{get_device_name()}:{args.distributed_backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         dist.init_process_group(

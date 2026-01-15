@@ -12,6 +12,7 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from slime.utils.distributed_utils import get_gloo_group, init_process_group
+from slime.utils.device import get_nccl_backend
 
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, named_params_and_buffers
@@ -259,12 +260,12 @@ def connect_rollout_engines_from_distributed(
             i * args.rollout_num_gpus_per_engine + 1,
             world_size,
             group_name,
-            backend="nccl",
+            backend=get_nccl_backend(),
         )
         for i, engine in enumerate(rollout_engines)
     ]
     model_update_groups = init_process_group(
-        backend="nccl",
+        backend=get_nccl_backend(),
         init_method=f"tcp://{master_address}:{master_port}",
         world_size=world_size,
         rank=0,
